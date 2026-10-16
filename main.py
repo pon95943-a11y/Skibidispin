@@ -1,12 +1,9 @@
-import asyncio
-import html
 import os
-import random
-import sqlite3
-import time
-from contextlib import contextmanager
 from threading import Thread
-
+import random
+import time
+import sqlite3
+import html
 from flask import Flask
 from aiogram import BaseMiddleware, Bot, Dispatcher, F
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -44,6 +41,8 @@ def keep_alive():
 
 
 # ---------------- БАЗА ДАННЫХ ----------------
+from contextlib import contextmanager
+
 @contextmanager
 def db():
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
@@ -184,7 +183,6 @@ GACHA_POOL = {
     ],
 }
 
-# сумма = 100
 RARITY_WEIGHTS = {
     "⚪ Обычный": 69.9,
     "🔵 Редкий": 25,
@@ -201,7 +199,6 @@ SCIENTIST_CASE_POOL = [
 
 RARITY_ORDER = ["🔴 МИФИЧЕСКИЙ", "🟡 Легендарный", "🟣 Эпический", "🔵 Редкий", "⚪ Обычный", "✨ Эксклюзивный"]
 
-# ---------------- ВСПОМОГАТЕЛЬНОЕ ----------------
 BTN_CARD = "🎴 Карта"
 BTN_TOP = "🏆 Топ"
 BTN_PROFILE = "👤 Профиль"
@@ -255,7 +252,6 @@ def farm_rate(uid):
 
 
 def collect_farm(uid):
-    """Выплачивает накопленное. Время сбора двигается только если реально начислены монеты."""
     now = time.time()
     rate, _ = farm_rate(uid)
     earned = 0
@@ -290,7 +286,6 @@ def farm_pending(uid, rate):
 
 
 def grant_item(uid, item):
-    """Выдаёт предмет. Перед выдачей учёного выплачивает ферму по старой ставке."""
     if item in FARM_RATES_PER_HOUR:
         collect_farm(uid)
     _add_item(uid, item)
@@ -306,7 +301,6 @@ async def send_photo_or_text(target: Message, photo, caption, **kwargs):
     await target.answer(caption, parse_mode="HTML", **kwargs)
 
 
-# ---------------- MIDDLEWARE ----------------
 class TouchMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         user = getattr(event, "from_user", None)
@@ -322,7 +316,6 @@ dp.message.outer_middleware(TouchMiddleware())
 dp.callback_query.outer_middleware(TouchMiddleware())
 
 
-# ---------------- ХЕНДЛЕРЫ ----------------
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     await message.answer(
@@ -353,7 +346,7 @@ async def cmd_spin(message: Message):
     coins = REWARD_COINS[rarity]
 
     add_coins(uid, coins)
-    _add_item(uid, f"{rarity} — {unit['name']}")
+    grant_item(uid, f"{rarity} — {unit['name']}")
 
     caption = (
         f"👤 {message.from_user.mention_html()}\n\n"
@@ -438,7 +431,6 @@ async def cmd_chances(message: Message):
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
-# ----- Магазин -----
 def shop_kb():
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=f"🧪 Купить кейс — {num(CASE_COST)} 🪙", callback_data="buy_scientist")
@@ -502,7 +494,6 @@ async def cmd_buy(message: Message):
         )
 
 
-# ----- Лаборатория (ферма) -----
 def lab_kb():
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="💰 Собрать монеты", callback_data="collect_farm")
@@ -546,7 +537,6 @@ async def cb_collect(cb: CallbackQuery):
         pass
 
 
-# ----- Промокоды -----
 def apply_promo(uid, code):
     code = code.strip().upper()
     promo = PROMO_CODES.get(code)
@@ -558,4 +548,16 @@ def apply_promo(uid, code):
     if not fresh:
         return "❌ Ты уже активировал этот промокод."
     add_coins(uid, promo["coins"])
-    text = f"🎉 <b>Промокод активирован!</b>\n\n💰 +{num(p
+    if promo["item"]:
+        grant_item(uid, promo["item"])
+    return f"🎉 Промокод активирован! Получено: +{num(promo['coins'])} 🪙" + (f" и предмет: {promo['item']}" if promo["item"] else "")
+
+
+@dp.message(Command("promo"))
+@dp.message(F.text == BTN_PROMO)
+async def cmd_promo_btn(message: Message, command: CommandObject = None):
+    uid = message.from_user.id
+    arg = command.args if command else None
+    if not arg:
+        parts = message.text.split(maxsplit=1)
+        if len(p
