@@ -16,7 +16,6 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-# Вот здесь токен должен быть обернут в кавычки как строка:
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8828163971:AAHNLvX88C12qzhR-aQJaTB52FznXDyi5hM")
 DB_PATH = os.getenv("DB_PATH", "database.db")
 
@@ -560,5 +559,4 @@ async def cmd_promo_btn(message: Message, command: CommandObject = None):
     uid = message.from_user.id
     arg = command.args if command else None
     if not arg:
-        parts = message.text.split(maxsplit=1)
-        if len(p
+        parts
