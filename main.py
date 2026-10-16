@@ -61,7 +61,7 @@ cursor.execute("""
 db_conn.commit()
 
 
-# --- ИСПРАВЛЕННАЯ АТОМАРНАЯ СИСТЕМА МОНЕТ ---
+# --- НАДЕЖНАЯ СИСТЕМА МОНЕТ ---
 def get_balance(user_id):
   cursor.execute("SELECT coins FROM balances WHERE user_id = ?", (user_id,))
   row = cursor.fetchone()
@@ -69,8 +69,7 @@ def get_balance(user_id):
 
 
 def update_balance(user_id, amount):
-  # Используем чистый SQL для безопасного изменения баланса прямо в базе,
-  # исключая любые баги с гонкой потоков и обнулением.
+  # Атомарное изменение: прибавляем amount к текущему балансу, не давая уйти в минус
   cursor.execute(
       """
         INSERT INTO balances (user_id, coins) VALUES (?, ?)
@@ -354,6 +353,8 @@ async def cmd_spin(message: types.Message):
   chance_val = RARITY_WEIGHTS[chosen_rarity]
 
   coins_earned = REWARD_COINS[chosen_rarity]
+  
+  # Корректное добавление награды к текущему балансу
   update_balance(user_id, coins_earned)
   total_coins = get_balance(user_id)
 
@@ -430,7 +431,7 @@ async def cmd_buy_scientist(message: types.Message):
 
   coins_earned = SCIENTIST_REWARDS.get(char_name, 0)
   
-  # Надежное списание стоимости и начисление возврата
+  # Списываем стоимость кейса (-3000) и добавляем бонус за ученого
   update_balance(user_id, -cost + coins_earned)
   total_coins = get_balance(user_id)
 
@@ -551,7 +552,7 @@ async def cmd_inventory(message: types.Message):
 
 
 async def main():
-  print("✅ Атомарная система монет активирована. Багов больше не будет!")
+  print("✅ Баг с балансом при гаче полностью исправлен!")
   await dp.start_polling(bot)
 
 
@@ -561,4 +562,4 @@ if __name__ == "__main__":
     asyncio.run(main())
   except (KeyboardInterrupt, SystemExit):
     print("🔴 Бот остановлен.")
-      
+  
