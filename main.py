@@ -25,14 +25,20 @@ CASE_COST = 3000
 FARM_CAP_HOURS = 12
 FARM_CAP = FARM_CAP_HOURS * 3600
 
-# ---------------- ВЕБ-СЕРВЕР ДЛЯ RENDER ----------------
+# ---------------- ВЕБ-СЕРВЕР ДЛЯ РАБОТЫ 24/7 ----------------
 app = Flask(__name__)
-
 
 @app.route("/")
 def home():
     return "Бот работает 24/7!"
 
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+
+# Запускаем веб-сервер в фоновом потоке сразу при старте файла
+web_thread = Thread(target=run_web, daemon=True)
+web_thread.start()
 
 # ---------------- БАЗА ДАННЫХ ----------------
 from contextlib import contextmanager
@@ -47,7 +53,6 @@ def db():
     finally:
         conn.close()
 
-
 with db() as c:
     c.execute("CREATE TABLE IF NOT EXISTS balances (user_id INTEGER PRIMARY KEY, coins INTEGER DEFAULT 0)")
     c.execute("""CREATE TABLE IF NOT EXISTS inventory (
@@ -57,7 +62,6 @@ with db() as c:
     c.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, name TEXT)")
     c.execute("CREATE TABLE IF NOT EXISTS promo_used (user_id INTEGER, code TEXT, PRIMARY KEY (user_id, code))")
 
-
 def remember_user(uid, name):
     with db() as c:
         c.execute(
@@ -66,12 +70,10 @@ def remember_user(uid, name):
             (uid, name),
         )
 
-
 def get_balance(uid):
     with db() as c:
         row = c.execute("SELECT coins FROM balances WHERE user_id = ?", (uid,)).fetchone()
     return row["coins"] if row else 0
-
 
 def add_coins(uid, amount):
     with db() as c:
@@ -81,7 +83,6 @@ def add_coins(uid, amount):
             (uid, amount, amount),
         )
 
-
 def spend_coins(uid, cost):
     with db() as c:
         cur = c.execute(
@@ -90,12 +91,10 @@ def spend_coins(uid, cost):
         )
         return cur.rowcount > 0
 
-
 def get_inventory(uid):
     with db() as c:
         rows = c.execute("SELECT item_name, count FROM inventory WHERE user_id = ?", (uid,)).fetchall()
     return {r["item_name"]: r["count"] for r in rows}
-
 
 def _add_item(uid, item):
     with db() as c:
@@ -105,12 +104,10 @@ def _add_item(uid, item):
             (uid, item),
         )
 
-
 def get_last_spin(uid):
     with db() as c:
         row = c.execute("SELECT last_time FROM cooldowns WHERE user_id = ?", (uid,)).fetchone()
     return row["last_time"] if row else 0
-
 
 def claim_spin(uid):
     now = time.time()
@@ -124,7 +121,6 @@ def claim_spin(uid):
             return 0
         last = c.execute("SELECT last_time FROM cooldowns WHERE user_id = ?", (uid,)).fetchone()["last_time"]
     return max(1, int(SPIN_COOLDOWN - (now - last)))
-
 
 # ---------------- ДАННЫЕ ИГРЫ ----------------
 PROMO_CODES = {
@@ -202,7 +198,6 @@ MENU_TEXTS = {BTN_CARD, BTN_TOP, BTN_PROFILE, BTN_INV, BTN_SHOP, BTN_LAB, BTN_CH
 
 awaiting_promo = set()
 
-
 def main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -217,10 +212,8 @@ def main_menu():
         input_field_placeholder="Выбери действие 👇",
     )
 
-
 def num(n):
     return f"{int(n):,}".replace(",", " ")
-
 
 def fmt_time(sec):
     sec = int(sec)
@@ -234,13 +227,11 @@ def fmt_time(sec):
         parts.append(f"{s} сек")
     return " ".join(parts)
 
-
 def farm_rate(uid):
     inv = get_inventory(uid)
     rate = sum(FARM_RATES_PER_HOUR[k] * inv.get(k, 0) for k in FARM_RATES_PER_HOUR)
     count = sum(inv.get(k, 0) for k in FARM_RATES_PER_HOUR)
     return rate, count
-
 
 def collect_farm(uid):
     now = time.time()
@@ -265,7 +256,6 @@ def collect_farm(uid):
         add_coins(uid, earned)
     return earned
 
-
 def farm_pending(uid, rate):
     if rate == 0:
         return 0
@@ -275,12 +265,10 @@ def farm_pending(uid, rate):
         return 0
     return int(rate / 3600 * min(time.time() - row["last_time"], FARM_CAP))
 
-
 def grant_item(uid, item):
     if item in FARM_RATES_PER_HOUR:
         collect_farm(uid)
     _add_item(uid, item)
-
 
 async def send_photo_or_text(target: Message, photo, caption, **kwargs):
     if photo:
@@ -291,7 +279,6 @@ async def send_photo_or_text(target: Message, photo, caption, **kwargs):
             print(f"Ошибка отправки фото: {e}")
     await target.answer(caption, parse_mode="HTML", **kwargs)
 
-
 class TouchMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         user = getattr(event, "from_user", None)
@@ -301,11 +288,9 @@ class TouchMiddleware(BaseMiddleware):
                 awaiting_promo.discard(user.id)
         return await handler(event, data)
 
-
 dp = Dispatcher()
 dp.message.outer_middleware(TouchMiddleware())
 dp.callback_query.outer_middleware(TouchMiddleware())
-
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
@@ -317,11 +302,9 @@ async def cmd_start(message: Message):
         reply_markup=main_menu(),
     )
 
-
 @dp.message(Command("menu"))
 async def cmd_menu(message: Message):
     await message.answer("Меню 👇", reply_markup=main_menu())
-
 
 @dp.message(Command("spin"))
 @dp.message(F.text == BTN_CARD)
@@ -349,7 +332,6 @@ async def cmd_spin(message: Message):
     )
     await send_photo_or_text(message, unit.get("photo"), caption)
 
-
 @dp.message(Command("balance"))
 @dp.message(Command("profile"))
 @dp.message(F.text == BTN_PROFILE)
@@ -367,7 +349,6 @@ async def cmd_profile(message: Message):
         f"🎴 Следующая карта: <b>{spin}</b>",
         parse_mode="HTML",
     )
-
 
 @dp.message(Command("inventory"))
 @dp.message(F.text == BTN_INV)
@@ -389,7 +370,6 @@ async def cmd_inventory(message: Message):
         parse_mode="HTML",
     )
 
-
 @dp.message(Command("top"))
 @dp.message(F.text == BTN_TOP)
 async def cmd_top(message: Message):
@@ -408,7 +388,6 @@ async def cmd_top(message: Message):
         lines.append(f"{mark} {html.escape(r['name'] or 'Игрок')} — <b>{num(r['coins'])}</b> 🪙")
     await message.answer("🏆 <b>Топ по монетам</b>\n\n" + "\n".join(lines), parse_mode="HTML")
 
-
 @dp.message(Command("chances"))
 @dp.message(F.text == BTN_CHANCES)
 async def cmd_chances(message: Message):
@@ -421,12 +400,10 @@ async def cmd_chances(message: Message):
         lines.append(f"{u['name']} — {u['weight']}% ({num(rate)}/ч)")
     await message.answer("\n".join(lines), parse_mode="HTML")
 
-
 def shop_kb():
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=f"🧪 Купить кейс — {num(CASE_COST)} 🪙", callback_data="buy_scientist")
     ]])
-
 
 @dp.message(Command("shop"))
 @dp.message(F.text == BTN_SHOP)
@@ -442,7 +419,6 @@ async def cmd_shop(message: Message):
         rate = FARM_RATES_PER_HOUR[f"{u['rarity_label']} — {u['name']}"]
         lines.append(f"├ {u['name']} — {u['weight']}% · {num(rate)}/ч")
     await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=shop_kb())
-
 
 async def open_scientist_case(user, target: Message):
     uid = user.id
@@ -463,7 +439,6 @@ async def open_scientist_case(user, target: Message):
     await send_photo_or_text(target, unit.get("photo"), caption)
     return True
 
-
 @dp.callback_query(F.data == "buy_scientist")
 async def cb_buy(cb: CallbackQuery):
     ok = await open_scientist_case(cb.from_user, cb.message)
@@ -475,7 +450,6 @@ async def cb_buy(cb: CallbackQuery):
             show_alert=True,
         )
 
-
 @dp.message(Command("buy_scientist"))
 async def cmd_buy(message: Message):
     if not await open_scientist_case(message.from_user, message):
@@ -484,12 +458,10 @@ async def cmd_buy(message: Message):
             parse_mode="HTML",
         )
 
-
 def lab_kb():
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="💰 Собрать монеты", callback_data="collect_farm")
     ]])
-
 
 def lab_text(uid, mention):
     rate, sc = farm_rate(uid)
@@ -508,13 +480,11 @@ def lab_text(uid, mention):
         True,
     )
 
-
 @dp.message(Command("farm"))
 @dp.message(F.text == BTN_LAB)
 async def cmd_lab(message: Message):
     text, has = lab_text(message.from_user.id, message.from_user.mention_html())
     await message.answer(text, parse_mode="HTML", reply_markup=lab_kb() if has else None)
-
 
 @dp.callback_query(F.data == "collect_farm")
 async def cb_collect(cb: CallbackQuery):
@@ -526,7 +496,6 @@ async def cb_collect(cb: CallbackQuery):
         await cb.message.edit_text(text, parse_mode="HTML", reply_markup=lab_kb() if has else None)
     except Exception:
         pass
-
 
 def apply_promo(uid, code):
     code = code.strip().upper()
@@ -543,6 +512,10 @@ def apply_promo(uid, code):
         grant_item(uid, promo["item"])
     return f"🎉 Промокод активирован! Получено: +{num(promo['coins'])} 🪙" + (f" и предмет: {promo['item']}" if promo["item"] else "")
 
+@dp.message(Command("promo"))
+@dp.message(F.text == BTN_PROMO)
+async def cmd_promo_btn(message: Message, command: CommandCommandObject = None):
+    pass
 
 @dp.message(Command("promo"))
 @dp.message(F.text == BTN_PROMO)
@@ -554,15 +527,4 @@ async def cmd_promo_btn(message: Message, command: CommandObject = None):
         if len(parts) > 1:
             arg = parts[1]
     if not arg:
-        awaiting_promo.add(uid)
-        await message.answer("🎁 Введи промокод следующим сообщением:", reply_markup=main_menu())
-        return
-    await message.answer(apply_promo(uid, arg))
-
-
-@dp.message(F.text & ~F.text.in_(MENU_TEXTS))
-async def text_interceptor(message: Message):
-    uid = message.from_user.id
-    if uid in awaiting_promo:
-        awaiting_promo.remove(uid)
-        await message.answer
+        awaiting_promo.add
