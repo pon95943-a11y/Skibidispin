@@ -17,8 +17,11 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8866942007:AAEGICzQpE_JHrnzuvMsoy4LZco37h7dvLg")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("Не задан BOT_TOKEN в переменных окружения!")
 DB_PATH = os.getenv("DB_PATH", "database.db")
+
 
 # ---------------- КОНСТАНТЫ ----------------
 SPIN_COOLDOWN = 3600
