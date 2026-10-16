@@ -36,13 +36,6 @@ app = Flask(__name__)
 def home():
     return "Бот работает 24/7!"
 
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
-
-# Запускаем веб-сервер в фоновом потоке сразу при старте файла
-web_thread = Thread(target=run_web, daemon=True)
-web_thread.start()
 
 # ---------------- БАЗА ДАННЫХ ----------------
 from contextlib import contextmanager
