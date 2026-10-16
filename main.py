@@ -8,7 +8,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-TOKEN = os.getenv(8828163971:AAFcyWMENFCzFHJkKO6CQfygpsjReLE3AR0)
+TOKEN = os.getenv(8828163971:AAG5915UU9EJKnKjAHhXYJKxFqstwObgwNE)
 
 PULL_COST = 100          # цена одной крутки
 DAILY_REWARD = 300       # ежедневный бонус
