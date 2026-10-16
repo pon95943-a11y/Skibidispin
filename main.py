@@ -512,10 +512,6 @@ def apply_promo(uid, code):
         grant_item(uid, promo["item"])
     return f"🎉 Промокод активирован! Получено: +{num(promo['coins'])} 🪙" + (f" и предмет: {promo['item']}" if promo["item"] else "")
 
-@dp.message(Command("promo"))
-@dp.message(F.text == BTN_PROMO)
-async def cmd_promo_btn(message: Message, command: CommandCommandObject = None):
-    pass
 
 @dp.message(Command("promo"))
 @dp.message(F.text == BTN_PROMO)
@@ -527,4 +523,34 @@ async def cmd_promo_btn(message: Message, command: CommandObject = None):
         if len(parts) > 1:
             arg = parts[1]
     if not arg:
-        awaiting_promo.add
+        awaiting_promo.add(uid)
+        await message.answer("🎁 Введи промокод следующим сообщением:", reply_markup=main_menu())
+        return
+    await message.answer(apply_promo(uid, arg))
+
+
+@dp.message(F.text & ~F.text.in_(MENU_TEXTS))
+async def text_interceptor(message: Message):
+    uid = message.from_user.id
+    if uid in awaiting_promo:
+        awaiting_promo.remove(uid)
+        await message.answer(apply_promo(uid, message.text))
+
+
+async def main():
+    bot = Bot(token=BOT_TOKEN)
+    print("Бот запущен...")
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    # Запускаем телеграм-бота в фоновом потоке
+    bot_thread = Thread(target=lambda: asyncio.run(main()), daemon=True)
+    bot_thread.start()
+    print("🤖 Telegram-бот запущен в фоне...")
+
+    # Главным процессом намертво запускаем Flask для Render
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+    
+    
