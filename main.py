@@ -59,13 +59,6 @@ cursor.execute("""
         last_time REAL
     )
 """)
-cursor.execute("""
-    CREATE TABLE IF NOT EXISTS redeemed_codes (
-        user_id INTEGER,
-        code_name TEXT,
-        PRIMARY KEY (user_id, code_name)
-    )
-""")
 db_conn.commit()
 
 
@@ -133,22 +126,6 @@ def set_farm_time(user_id, timestamp):
   cursor.execute(
       "INSERT OR REPLACE INTO farm_times (user_id, last_time) VALUES (?, ?)",
       (user_id, timestamp),
-  )
-  db_conn.commit()
-
-
-def has_redeemed(user_id, code_name):
-  cursor.execute(
-      "SELECT 1 FROM redeemed_codes WHERE user_id = ? AND code_name = ?",
-      (user_id, code_name),
-  )
-  return cursor.fetchone() is not None
-
-
-def mark_redeemed(user_id, code_name):
-  cursor.execute(
-      "INSERT OR REPLACE INTO redeemed_codes (user_id, code_name) VALUES (?, ?)",
-      (user_id, code_name),
   )
   db_conn.commit()
 
@@ -313,17 +290,13 @@ async def cmd_promo(message: types.Message):
   
   args = message.text.split(maxsplit=1)
   if len(args) < 2:
-    await message.reply("❌ Введи промокод! Пример: `/promo SLADCIYKRYT`", parse_mode="Markdown")
+    await message.reply("❌ Введи промокод! Пример: `/promo SKIBIDI`", parse_mode="Markdown")
     return
 
   code = args[1].strip().upper()
 
   if code not in PROMO_CODES:
     await message.reply("❌ Такого промокода не существует или он просрочен!", parse_mode="Markdown")
-    return
-
-  if has_redeemed(user_id, code):
-    await message.reply(f"❌ {user_mention}, ты уже активировал этот промокод!", parse_mode="Markdown")
     return
 
   promo_data = PROMO_CODES[code]
@@ -334,7 +307,6 @@ async def cmd_promo(message: types.Message):
   if item_reward:
     add_item_to_inventory(user_id, item_reward)
 
-  mark_redeemed(user_id, code)
   total_coins = get_balance(user_id)
 
   text = (
@@ -576,7 +548,7 @@ async def cmd_inventory(message: types.Message):
 
 
 async def main():
-  print("✅ Бот запущен! Ошибка синтаксиса исправлена.")
+  print("✅ Бот запущен! Ошибки исправлены.")
   await dp.start_polling(bot)
 
 
@@ -586,3 +558,4 @@ if __name__ == "__main__":
     asyncio.run(main())
   except (KeyboardInterrupt, SystemExit):
     print("🔴 Бот остановлен.")
+  
