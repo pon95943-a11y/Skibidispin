@@ -1,454 +1,195 @@
-import os
-from threading import Thread
-from flask import Flask
 import asyncio
+import os
 import random
-import time
 import sqlite3
-from aiogram import Bot, Dispatcher, types
+import time
+
+from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-# --- НАСТРОЙКА ВЕБ-СЕРВЕРА ДЛЯ 24/7 ---
-app = Flask("")
+TOKEN = os.getenv("BOT_TOKEN", "PUT_YOUR_TOKEN_HERE")
 
-@app.route("/")
-def home():
-    return "Бот работает 24/7!"
+PULL_COST = 100          # цена одной крутки
+DAILY_REWARD = 300       # ежедневный бонус
+START_COINS = 500        # стартовые монеты
+PITY_LIMIT = 50          # гарантия легендарки через N круток без неё
 
-def run():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+# Редкости: (название, шанс в %, эмодзи, монет за дубликат)
+RARITIES = {
+    "common":    ("Обычный",     60.0, "⚪", 20),
+    "rare":      ("Редкий",      25.0, "🔵", 50),
+    "epic":      ("Эпический",   11.0, "🟣", 120),
+    "legendary": ("Легендарный",  4.0, "🌟", 400),
+}
 
-def keep_alive():
-    t = Thread(target=run)
-    t.daemon = True
-    t.start()
+# Персонажи (можешь свободно добавлять своих)
+CHARACTERS = {
+    "common": [
+        "Базовый Скибиди Туалет", "Мини Скибиди", "Туалет-Новичок",
+        "Камерамен-Стажёр", "Спикермен-Стажёр",
+    ],
+    "rare": [
+        "Камерамен", "Спикермен", "ТВ-мен", "Джетпак Скибиди", "Скибиди-Шпион",
+    ],
+    "epic": [
+        "Большой Спикермен", "Титан Камерамен", "Скибиди-Босс", "G-Man Туалет",
+    ],
+    "legendary": [
+        "Титан ТВ-мен", "Титан Спикермен", "Великий Скибиди-Император",
+    ],
+}
 
-# --- НАДЕЖНАЯ БАЗА ДАННЫХ С ТАЙМАУТОМ ---
-DB_NAME = "database.db"
+db = sqlite3.connect("gacha.db", check_same_thread=False)
+db.execute("""CREATE TABLE IF NOT EXISTS users(
+    id INTEGER PRIMARY KEY, coins INTEGER, pity INTEGER DEFAULT 0, last_daily REAL DEFAULT 0)""")
+db.execute("""CREATE TABLE IF NOT EXISTS inv(
+    user_id INTEGER, name TEXT, rarity TEXT, count INTEGER DEFAULT 1,
+    PRIMARY KEY(user_id, name))""")
+db.commit()
 
-def get_db_connection():
-    conn = sqlite3.connect(DB_NAME, timeout=30.0, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
 
-# Инициализация таблиц
-with get_db_connection() as conn:
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS balances (
-            user_id INTEGER PRIMARY KEY,
-            coins INTEGER DEFAULT 0
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS inventory (
-            user_id INTEGER,
-            item_name TEXT,
-            count INTEGER,
-            PRIMARY KEY (user_id, item_name)
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS cooldowns (
-            user_id INTEGER PRIMARY KEY,
-            last_time REAL
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS farm_times (
-            user_id INTEGER PRIMARY KEY,
-            last_time REAL
-        )
-    """)
-    conn.commit()
+def get_user(uid: int):
+    row = db.execute("SELECT coins, pity, last_daily FROM users WHERE id=?", (uid,)).fetchone()
+    if not row:
+        db.execute("INSERT INTO users(id, coins) VALUES(?, ?)", (uid, START_COINS))
+        db.commit()
+        return START_COINS, 0, 0.0
+    return row
 
-# --- ФУНКЦИИ БАЗЫ ДАННЫХ ---
-def get_balance(user_id):
-    with get_db_connection() as conn:
-        row = conn.execute("SELECT coins FROM balances WHERE user_id = ?", (user_id,)).fetchone()
-        return row["coins"] if row else 0
 
-def update_balance(user_id, amount):
-    with get_db_connection() as conn:
-        current = get_balance(user_id)
-        new_balance = max(0, current + amount)
-        conn.execute(
-            "INSERT INTO balances (user_id, coins) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET coins = ?",
-            (user_id, new_balance, new_balance)
-        )
-        conn.commit()
+def roll_rarity(pity: int) -> str:
+    if pity + 1 >= PITY_LIMIT:
+        return "legendary"
+    keys = list(RARITIES)
+    weights = [RARITIES[k][1] for k in keys]
+    return random.choices(keys, weights=weights)[0]
 
-def get_user_inventory(user_id):
-    with get_db_connection() as conn:
-        rows = conn.execute("SELECT item_name, count FROM inventory WHERE user_id = ?", (user_id,)).fetchall()
-        return {row["item_name"]: row["count"] for row in rows}
 
-def add_item_to_inventory(user_id, item_name):
-    with get_db_connection() as conn:
-        row = conn.execute("SELECT count FROM inventory WHERE user_id = ? AND item_name = ?", (user_id, item_name)).fetchone()
-        if row:
-            new_count = row["count"] + 1
-            conn.execute("UPDATE inventory SET count = ? WHERE user_id = ? AND item_name = ?", (new_count, user_id, item_name))
-        else:
-            conn.execute("INSERT INTO inventory (user_id, item_name, count) VALUES (?, ?, 1)", (user_id, item_name))
-        conn.commit()
+def do_pull(uid: int):
+    coins, pity, _ = get_user(uid)
+    if coins < PULL_COST:
+        return None
+    rarity = roll_rarity(pity)
+    pity = 0 if rarity == "legendary" else pity + 1
+    name = random.choice(CHARACTERS[rarity])
 
-def get_cooldown(user_id):
-    with get_db_connection() as conn:
-        row = conn.execute("SELECT last_time FROM cooldowns WHERE user_id = ?", (user_id,)).fetchone()
-        return row["last_time"] if row else 0
+    existing = db.execute("SELECT count FROM inv WHERE user_id=? AND name=?", (uid, name)).fetchone()
+    refund = 0
+    if existing:
+        db.execute("UPDATE inv SET count=count+1 WHERE user_id=? AND name=?", (uid, name))
+        refund = RARITIES[rarity][3]
+    else:
+        db.execute("INSERT INTO inv(user_id, name, rarity) VALUES(?,?,?)", (uid, name, rarity))
 
-def set_cooldown(user_id, timestamp):
-    with get_db_connection() as conn:
-        conn.execute(
-            "INSERT INTO cooldowns (user_id, last_time) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_time = ?",
-            (user_id, timestamp, timestamp)
-        )
-        conn.commit()
+    coins = coins - PULL_COST + refund
+    db.execute("UPDATE users SET coins=?, pity=? WHERE id=?", (coins, pity, uid))
+    db.commit()
+    return name, rarity, bool(existing), refund, coins, pity
 
-def get_farm_time(user_id):
-    with get_db_connection() as conn:
-        row = conn.execute("SELECT last_time FROM farm_times WHERE user_id = ?", (user_id,)).fetchone()
-        return row["last_time"] if row else None
 
-def set_farm_time(user_id, timestamp):
-    with get_db_connection() as conn:
-        conn.execute(
-            "INSERT INTO farm_times (user_id, last_time) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_time = ?",
-            (user_id, timestamp, timestamp)
-        )
-        conn.commit()
+def pull_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=f"🚽 Крутить ещё ({PULL_COST})", callback_data="pull")
+    ]])
 
-# --- ИНИЦИАЛИЗАЦИЯ БОТА ---
-BOT_TOKEN = "8828163971:AAFcyWMENFCzFHJkKO6CQfygpsjReLE3AR0"
 
-bot = Bot(token=BOT_TOKEN)
+def format_pull(res) -> str:
+    name, rarity, dup, refund, coins, pity = res
+    title, _, emoji, _ = RARITIES[rarity]
+    text = f"{emoji} <b>{title}</b>\n<b>{name}</b>\n"
+    if dup:
+        text += f"\n♻️ Дубликат! Возврат: +{refund} 🪙"
+    else:
+        text += "\n✨ Новый персонаж!"
+    text += f"\n\n🪙 Баланс: {coins}\n🎯 До гаранта: {PITY_LIMIT - pity}"
+    return text
+
+
 dp = Dispatcher()
 
-COOLDOWN_TIME = 3600  # 1 час
-
-PROMO_CODES = {
-    "SLADCIYKRYT": {"coins": 1000000, "item": None},
-    "SKIBIDI": {"coins": 500, "item": None},
-    "UPDATE": {"coins": 1000, "item": "✨ Эксклюзивный — Обычный Камерамен Учёный"},
-}
-
-REWARD_COINS = {
-    "⚪ Обычный": 10,
-    "🔵 Редкий": 30,
-    "🟣 Эпический": 70,
-    "🟡 Легендарный": 160,
-    "🔴 МИФИЧЕСКИЙ": 400,
-}
-
-FARM_RATES_PER_HOUR = {
-    "✨ Эксклюзивный — Обычный Камерамен Учёный": 200,
-    "✨ Эксклюзивный — Большой Камерамен Учёный": 1000,
-    "✨ Эксклюзивный — Инженер Камерамен": 5000,
-}
-
-SCIENTIST_REWARDS = {
-    "Обычный Камерамен Учёный": 20,
-    "Большой Камерамен Учёный": 100,
-    "Инженер Камерамен": 500,
-}
-
-GACHA_POOL = {
-    "⚪ Обычный": [
-        {"name": "Обычный Камерамен", "photo": "AgACAgIAAxkBAAM2atF_9oFMTdxTRDAl5TfLaJKKlSgAAvIeaxtpKohKAaYNEMymzUMBAAMCAAN4AAM9BA"},
-        {"name": "Обычный Спикермен", "photo": "AgACAgIAAxkBAAMwatF_IJKMqqiR41a3ucnaaftJ39EAAvUeaxtpKohKVZx6eWMZMZIBAAMCAAN4AAM9BA"},
-    ],
-    "🔵 Редкий": [
-        {"name": "Большой Спикермен", "photo": "AgACAgIAAxkBAANMatGJQ6tVvCpJG3OrctfOW9IOl6AAAgUfaxtpKohK5TL8RmFMXUgBAAMCAAN4AAM9BA"},
-        {"name": "Большой Камерамен", "photo": "AgACAgIAAxkBAANSatGJyzGYl0XWuPVoekp2cIPS3bcAAgsfaxtpKohKWHToAAEHYHRAAQADAgADeAADPQQ"},
-        {"name": "ТВ-мен", "photo": "AgACAgIAAxkBAAM4atGAGEyuP2vFGkW2ui9tSYGb5wgAAvYeaxtpKohKe6f0E2Xan8EBAAMCAAN4AAM9BA"},
-        {"name": "Симп Камерамен", "photo": "AgACAgIAAxkBAANIatGIsqrRjfHYayRoPjhL4b_ZfiIAAgQfaxtpKohKCk20eMwsUJEBAAMCAAN4AAM9BA"},
-    ],
-    "🟣 Эпический": [
-        {"name": "Вантузмен", "photo": "AgACAgIAAxkBAANQatGJw_bAopEqVKLtpGEhhNzeB7MAAgofaxtpKohKTBU12Qqf0wEBAAMCAAN4AAM9BA"},
-        {"name": "Большой ТВ-мен 1.0", "photo": "AgACAgIAAxkBAANOatGJa0NJxx8aIpda5XKs2T9FpbkAAgkfaxtpKohK60yeE-mvaIsBAAMCAAN4AAM9BA"},
-    ],
-    "🟡 Легендарный": [
-        {"name": "Камера-Титан 1.0", "photo": "AgACAgIAAxkBAANUatGJzglJG5MUxaopP_9EAAEr-lb9AAIMH2sbaSqISkd82X8HEDFhAQADAgADeAADPQQ"},
-        {"name": "Спикер-Титан 1.0", "photo": "AgACAgIAAxkBAANYatGJ1PdbUQZKSbjs4EgOuOjMRmsAAg4faxtpKohK5T1sYjzRVVUBAAMCAAN4AAM9BA"},
-        {"name": "ТВ-Титан 1.0", "photo": "AgACAgIAAxkBAANWatGJ0Y9efUDfjCY3ThWixV7M9X0AAg0faxtpKohKVjPouIIhOUMBAAMCAAN4AAM9BA"},
-        {"name": "Спикервумен", "photo": "AgACAgIAAxkBAANaatGJ2KRexMgi6IiYc1FIeojQDtsAAg8faxtpKohKeF7f-8vHJMIBAAMCAAN4AAM9BA"},
-    ],
-    "🔴 МИФИЧЕСКИЙ": [
-        {"name": "Камерамен Титан 2.0", "photo": "AgACAgIAAxkBAANcatGJ29AeApFutaztCK8lG0mvusEAAhAfaxtpKohK4hGQ5luQ_pYBAAMCAAN4AAM9BA"},
-        {"name": "Спикермен Титан 2.0", "photo": "AgACAgIAAxkBAANeatGJ3niIOvupuuEzkhmq0CuFe8YAAhEfaxtpKohKFuZWZzxokp4BAAMCAAN4AAM9BA"},
-    ],
-}
-
-RARITY_WEIGHTS = {
-    "⚪ Обычный": 70.1,
-    "🔵 Редкий": 25,
-    "🟣 Эпический": 4,
-    "🟡 Легендарный": 1.0,
-    "🔴 МИФИЧЕСКИЙ": 0.1,
-}
-
-SCIENTIST_CASE_POOL = [
-    {"name": "Обычный Камерамен Учёный", "rarity_label": "✨ Эксклюзивный", "weight": 93.0, "photo": "AgACAgIAAxkBAANhatGLYm7M7u2dDlU-oXLBG9hCuUsAAhIfaxtpKohKY3U7gy9B2o0BAAMCAAN4AAM9BA"},
-    {"name": "Большой Камерамен Учёный", "rarity_label": "✨ Эксклюзивный", "weight": 6.0, "photo": "AgACAgIAAxkBAANiatGLZ2VMe_Yw3e7TWu5ktNgcqzwAAhMfaxtpKohKgfRhBNwh6FsBAAMCAAN4AAM9BA"},
-    {"name": "Инженер Камерамен", "rarity_label": "✨ Эксклюзивный", "weight": 1.0, "photo": "AgACAgIAAxkBAANjatGLasg7RHfLLR5RBrg_adHxankAAhQfaxtpKohKBX_reeD_jHQBAAMCAAN4AAM9BA"},
-]
 
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    await message.answer(
-        "🛸 **Skibidi Gacha Bot запущен!**\n\n"
-        "- `/spin` — Крутка кейса (КД: 1 час)\n"
-        "- `/shop` — Магазин кейсов\n"
-        "- `/farm` — Ферма монет (нужны Учёные)\n"
-        "- `/inventory` — Твоя коллекция\n"
-        "- `/balance` — Проверить монеты\n"
-        "- `/promo <код>` — Активировать промокод",
-        parse_mode="Markdown"
+async def start(m: Message):
+    get_user(m.from_user.id)
+    await m.answer(
+        "🚽 <b>Skibidi Gacha</b>\n\n"
+        "Крути туалеты и собирай коллекцию!\n\n"
+        "/pull — крутка\n"
+        "/daily — ежедневный бонус\n"
+        "/collection — твоя коллекция\n"
+        "/balance — баланс\n"
+        "/top — топ коллекционеров",
+        parse_mode="HTML",
     )
 
-@dp.message(Command("promo"))
-async def cmd_promo(message: types.Message):
-    user_id = message.from_user.id
-    user_mention = message.from_user.mention_markdown(message.from_user.first_name)
-    
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.reply("❌ Введи промокод! Пример: `/promo SLADCIYKRYT`", parse_mode="Markdown")
-        return
-
-    code = args[1].strip().upper()
-    if code not in PROMO_CODES:
-        await message.reply("❌ Такого промокода не существует или он просрочен!", parse_mode="Markdown")
-        return
-
-    promo_data = PROMO_CODES[code]
-    coins_reward = promo_data["coins"]
-    item_reward = promo_data["item"]
-
-    update_balance(user_id, coins_reward)
-    if item_reward:
-        add_item_to_inventory(user_id, item_reward)
-
-    total_coins = get_balance(user_id)
-    text = (
-        f"🎉 **Промокод успешно активирован!** ({user_mention})\n\n"
-        f"💰 Получено монет: **+{coins_reward}**\n"
-    )
-    if item_reward:
-        text += f"🎁 Получен предмет: **{item_reward}**\n"
-    text += f"💳 Твой баланс: **{total_coins}** монет"
-
-    await message.reply(text, parse_mode="Markdown")
-
-@dp.message(Command("spin"))
-async def cmd_spin(message: types.Message):
-    user_id = message.from_user.id
-    current_time = time.time()
-
-    last_cd = get_cooldown(user_id)
-    if last_cd and (current_time - last_cd < COOLDOWN_TIME):
-        remaining_sec = int(COOLDOWN_TIME - (current_time - last_cd))
-        hours = remaining_sec // 3600
-        minutes = (remaining_sec % 3600) // 60
-        seconds = remaining_sec % 60
-        await message.reply(f"⏳ Кейс на перезарядке! Жди еще {hours} ч. {minutes} мин. {seconds} сек.")
-        return
-
-    set_cooldown(user_id, current_time)
-    user_mention = message.from_user.mention_markdown(message.from_user.first_name)
-
-    rarities = list(RARITY_WEIGHTS.keys())
-    weights = list(RARITY_WEIGHTS.values())
-    chosen_rarity = random.choices(rarities, weights=weights, k=1)[0]
-    character_data = random.choice(GACHA_POOL[chosen_rarity])
-
-    char_name = character_data["name"]
-    char_photo = character_data.get("photo")
-    chance_val = RARITY_WEIGHTS[chosen_rarity]
-
-    coins_earned = REWARD_COINS[chosen_rarity]
-    update_balance(user_id, coins_earned)
-    total_coins = get_balance(user_id)
-
-    # Строго добавляем в инвентарь
-    item_full_name = f"{chosen_rarity} — {char_name}"
-    add_item_to_inventory(user_id, item_full_name)
-
-    caption = (
-        f"👤 Игрок: {user_mention}\n\n"
-        f"🌀 **Открытие кейса...**\n\n"
-        f"Тебе выпал: **{char_name}**!\n"
-        f"Редкость: **{chosen_rarity}**\n"
-        f"Шанс выпадения: `{chance_val}%`\n\n"
-        f"💰 **Награда:** +{coins_earned} монет (Всего: {total_coins})"
-    )
-
-    if char_photo:
-        try:
-            await message.reply_photo(photo=char_photo, caption=caption, parse_mode="Markdown")
-            return
-        except Exception as e:
-            print(f"Ошибка отправки фото персонажа: {e}")
-
-    await message.reply(caption, parse_mode="Markdown")
-
-@dp.message(Command("shop"))
-async def cmd_shop(message: types.Message):
-    user_id = message.from_user.id
-    user_mention = message.from_user.mention_markdown(message.from_user.first_name)
-    balance = get_balance(user_id)
-
-    text = (
-        f"🛒 **Магазин кейсов** ({user_mention})\n"
-        f"💳 Твой баланс: **{balance}** монет\n\n"
-        f"🧪 **Кейс Учёных** — `3000` монет\n"
-        f"Редкость юнитов: **✨ Эксклюзивный**\n"
-        f"├ ⚪ Обычный Камерамен Учёный — **93%** (доход 200/ч)\n"
-        f"├ 🔵 Большой Камерамен Учёный — **6%** (доход 1000/ч)\n"
-        f"└ 🟡 Инженер Камерамен — **1%** (доход 5000/ч)\n\n"
-        f"👉 Купить кейс: `/buy_scientist`\n"
-        f"🚜 Собрать фарм: `/farm`"
-    )
-    await message.reply(text, parse_mode="Markdown")
-
-@dp.message(Command("buy_scientist"))
-async def cmd_buy_scientist(message: types.Message):
-    user_id = message.from_user.id
-    cost = 3000
-    balance = get_balance(user_id)
-
-    if balance < cost:
-        await message.reply(
-            f"❌ Недостаточно монет! Кейс Учёных стоит **{cost}** монет (у тебя **{balance}**).",
-            parse_mode="Markdown"
-        )
-        return
-
-    user_mention = message.from_user.mention_markdown(message.from_user.first_name)
-
-    weights = [item["weight"] for item in SCIENTIST_CASE_POOL]
-    chosen_unit = random.choices(SCIENTIST_CASE_POOL, weights=weights, k=1)[0]
-
-    char_name = chosen_unit["name"]
-    rarity_label = chosen_unit["rarity_label"]
-    chance_val = chosen_unit["weight"]
-    char_photo = chosen_unit.get("photo")
-
-    coins_reward = SCIENTIST_REWARDS.get(char_name, 0)
-    
-    # Сначала списываем стоимость, потом начисляем возврат
-    update_balance(user_id, -cost)
-    update_balance(user_id, coins_reward)
-    total_coins = get_balance(user_id)
-
-    # Строго добавляем учёного в инвентарь для фарма
-    item_full_name = f"{rarity_label} — {char_name}"
-    add_item_to_inventory(user_id, item_full_name)
-
-    caption = (
-        f"🧪 **Открытие Кейса Учёных...** ({user_mention})\n\n"
-        f"Тебе выпал: **{char_name}**!\n"
-        f"Редкость: **{rarity_label}**\n"
-        f"Шанс выпадения: `{chance_val}%`\n\n"
-        f"💸 **Списано:** -{cost} монет\n"
-        f"💰 **Возврат:** +{coins_reward} монет\n"
-        f"💳 **Текущий баланс:** {total_coins} монет\n\n"
-        f"🚜 *Этот юнит успешно добавлен в инвентарь и работает в `/farm`!*"
-    )
-
-    if char_photo:
-        try:
-            await message.reply_photo(photo=char_photo, caption=caption, parse_mode="Markdown")
-            return
-        except Exception as e:
-            print(f"Ошибка отправки фото учёного: {e}")
-
-    await message.reply(caption, parse_mode="Markdown")
-
-@dp.message(Command("farm"))
-async def cmd_farm(message: types.Message):
-    user_id = message.from_user.id
-    user_mention = message.from_user.mention_markdown(message.from_user.first_name)
-    items = get_user_inventory(user_id)
-
-    hourly_rate = 0
-    scientist_count = 0
-
-    for item_key, rate in FARM_RATES_PER_HOUR.items():
-        count = items.get(item_key, 0)
-        if count > 0:
-            hourly_rate += rate * count
-            scientist_count += count
-
-    if scientist_count == 0:
-        await message.reply(
-            f"⚙️ {user_mention}, у тебя нет учёных для работы фермы!\n\n"
-            f"Купи **Кейс Учёных** в `/shop` (`/buy_scientist`), чтобы запустить пассивный доход.",
-            parse_mode="Markdown"
-        )
-        return
-
-    current_time = time.time()
-    last_time = get_farm_time(user_id)
-    if last_time is None:
-        last_time = current_time
-
-    elapsed_seconds = current_time - last_time
-    earned_coins = int((hourly_rate / 3600) * elapsed_seconds)
-
-    set_farm_time(user_id, current_time)
-
-    if earned_coins > 0:
-        update_balance(user_id, earned_coins)
-
-    total_coins = get_balance(user_id)
-
-    await message.reply(
-        f"🚜 **Лабораторная Ферма** ({user_mention})\n\n"
-        f"👨‍🔬 Работающих учёных: **{scientist_count} шт.**\n"
-        f"⚡ Общий доход: **{hourly_rate} монет/час**\n\n"
-        f"💰 **Собрано монет:** +{earned_coins}\n"
-        f"💳 **Твой баланс:** {total_coins} монет",
-        parse_mode="Markdown"
-    )
 
 @dp.message(Command("balance"))
-async def cmd_balance(message: types.Message):
-    user_id = message.from_user.id
-    user_mention = message.from_user.mention_markdown(message.from_user.first_name)
-    balance = get_balance(user_id)
-    await message.reply(f"🪙 {user_mention}, твой баланс: **{balance}** монет.", parse_mode="Markdown")
+async def balance(m: Message):
+    coins, pity, _ = get_user(m.from_user.id)
+    await m.answer(f"🪙 Монеты: {coins}\n🎯 До гаранта легендарки: {PITY_LIMIT - pity}")
 
-@dp.message(Command("inventory"))
-async def cmd_inventory(message: types.Message):
-    user_id = message.from_user.id
-    user_mention = message.from_user.mention_markdown(message.from_user.first_name)
-    items = get_user_inventory(user_id)
 
-    if not items:
-        await message.reply(f"🎒 {user_mention}, твой инвентарь пуст!", parse_mode="Markdown")
-        return
+@dp.message(Command("daily"))
+async def daily(m: Message):
+    coins, _, last = get_user(m.from_user.id)
+    left = 86400 - (time.time() - last)
+    if left > 0:
+        h, mn = int(left // 3600), int(left % 3600 // 60)
+        return await m.answer(f"⏳ Бонус будет доступен через {h}ч {mn}м")
+    db.execute("UPDATE users SET coins=coins+?, last_daily=? WHERE id=?",
+               (DAILY_REWARD, time.time(), m.from_user.id))
+    db.commit()
+    await m.answer(f"🎁 +{DAILY_REWARD} 🪙! Баланс: {coins + DAILY_REWARD}")
 
-    inventory_list = []
-    for item, count in items.items():
-        if count > 1:
-            inventory_list.append(f"{item} **[x{count}]**")
-        else:
-            inventory_list.append(item)
 
-    await message.reply(
-        f"🎒 **Коллекция {user_mention}:**\n\n" + "\n".join(inventory_list[-20:]),
-        parse_mode="Markdown"
-    )
+@dp.message(Command("pull"))
+async def pull_cmd(m: Message):
+    res = do_pull(m.from_user.id)
+    if not res:
+        return await m.answer("😢 Не хватает монет. Забери /daily")
+    await m.answer(format_pull(res), parse_mode="HTML", reply_markup=pull_keyboard())
+
+
+@dp.callback_query(F.data == "pull")
+async def pull_btn(c: CallbackQuery):
+    res = do_pull(c.from_user.id)
+    if not res:
+        return await c.answer("Не хватает монет 😢", show_alert=True)
+    await c.message.answer(format_pull(res), parse_mode="HTML", reply_markup=pull_keyboard())
+    await c.answer()
+
+
+@dp.message(Command("collection"))
+async def collection(m: Message):
+    rows = db.execute("SELECT name, rarity, count FROM inv WHERE user_id=?", (m.from_user.id,)).fetchall()
+    if not rows:
+        return await m.answer("Коллекция пуста. Попробуй /pull")
+    order = list(RARITIES)[::-1]
+    rows.sort(key=lambda r: order.index(r[1]))
+    total = sum(len(v) for v in CHARACTERS.values())
+    lines = [f"📚 <b>Коллекция {len(rows)}/{total}</b>\n"]
+    for name, rarity, cnt in rows:
+        lines.append(f"{RARITIES[rarity][2]} {name} x{cnt}")
+    await m.answer("\n".join(lines), parse_mode="HTML")
+
+
+@dp.message(Command("top"))
+async def top(m: Message):
+    rows = db.execute(
+        "SELECT user_id, COUNT(*) c FROM inv GROUP BY user_id ORDER BY c DESC LIMIT 10").fetchall()
+    if not rows:
+        return await m.answer("Пока никого нет")
+    text = "🏆 <b>Топ коллекционеров</b>\n\n" + "\n".join(
+        f"{i}. id{uid} — {c} перс." for i, (uid, c) in enumerate(rows, 1))
+    await m.answer(text, parse_mode="HTML")
+
 
 async def main():
-    print("✅ Бот запущен с исправленной базой данных и инвентарем!")
+    bot = Bot(TOKEN)
     await dp.start_polling(bot)
 
+
 if __name__ == "__main__":
-    keep_alive()
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        print("🔴 Бот остановлен.")
+    asyncio.run(main())
+    
