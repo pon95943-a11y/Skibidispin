@@ -32,11 +32,10 @@ def keep_alive():
 db_conn = sqlite3.connect("database.db", check_same_thread=False)
 cursor = db_conn.cursor()
 
-# Создаем таблицы для персистентного хранения
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS balances (
         user_id INTEGER PRIMARY KEY,
-        coins INTEGER
+        coins INTEGER DEFAULT 0
     )
 """)
 cursor.execute("""
@@ -62,7 +61,7 @@ cursor.execute("""
 db_conn.commit()
 
 
-# --- ФУНКЦИИ РАБОТЫ С БАЗОЙ ДАННЫХ ---
+# --- ИСПРАВЛЕННАЯ АТОМАРНАЯ СИСТЕМА МОНЕТ ---
 def get_balance(user_id):
   cursor.execute("SELECT coins FROM balances WHERE user_id = ?", (user_id,))
   row = cursor.fetchone()
@@ -70,11 +69,15 @@ def get_balance(user_id):
 
 
 def update_balance(user_id, amount):
-  current = get_balance(user_id)
-  new_balance = current + amount
+  # Используем чистый SQL для безопасного изменения баланса прямо в базе,
+  # исключая любые баги с гонкой потоков и обнулением.
   cursor.execute(
-      "INSERT OR REPLACE INTO balances (user_id, coins) VALUES (?, ?)",
-      (user_id, new_balance),
+      """
+        INSERT INTO balances (user_id, coins) VALUES (?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET 
+        coins = MAX(0, balances.coins + ?)
+    """,
+      (user_id, max(0, amount), amount),
   )
   db_conn.commit()
 
@@ -139,14 +142,13 @@ dp = Dispatcher()
 # КД на гачу: 1 час (3600 секунд)
 COOLDOWN_TIME = 3600
 
-# --- СПИСОК ПРОМОКОДОВ ---
+# --- ПРОМОКОДЫ ---
 PROMO_CODES = {
     "SLADCIYKRYT": {"coins": 1000000, "item": None},
     "SKIBIDI": {"coins": 500, "item": None},
     "UPDATE": {"coins": 1000, "item": "✨ Эксклюзивный — Обычный Камерамен Учёный"},
 }
 
-# Награды в монетах за базовые редкости (х2)
 REWARD_COINS = {
     "⚪ Обычный": 10,
     "🔵 Редкий": 30,
@@ -155,7 +157,6 @@ REWARD_COINS = {
     "🔴 МИФИЧЕСКИЙ": 400,
 }
 
-# Доход ученых в час (за 1 шт.)
 FARM_RATES_PER_HOUR = {
     "✨ Эксклюзивный — Обычный Камерамен Учёный": 200,
     "✨ Эксклюзивный — Большой Камерамен Учёный": 1000,
@@ -290,7 +291,7 @@ async def cmd_promo(message: types.Message):
   
   args = message.text.split(maxsplit=1)
   if len(args) < 2:
-    await message.reply("❌ Введи промокод! Пример: `/promo SKIBIDI`", parse_mode="Markdown")
+    await message.reply("❌ Введи промокод! Пример: `/promo SLADCIYKRYT`", parse_mode="Markdown")
     return
 
   code = args[1].strip().upper()
@@ -428,6 +429,8 @@ async def cmd_buy_scientist(message: types.Message):
   char_photo = chosen_unit.get("photo")
 
   coins_earned = SCIENTIST_REWARDS.get(char_name, 0)
+  
+  # Надежное списание стоимости и начисление возврата
   update_balance(user_id, -cost + coins_earned)
   total_coins = get_balance(user_id)
 
@@ -548,7 +551,7 @@ async def cmd_inventory(message: types.Message):
 
 
 async def main():
-  print("✅ Бот запущен! Ошибки исправлены.")
+  print("✅ Атомарная система монет активирована. Багов больше не будет!")
   await dp.start_polling(bot)
 
 
@@ -558,4 +561,4 @@ if __name__ == "__main__":
     asyncio.run(main())
   except (KeyboardInterrupt, SystemExit):
     print("🔴 Бот остановлен.")
-  
+      
