@@ -20,25 +20,18 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "8828163971:AAHNLvX88C12qzhR-aQJaTB52FznXDyi5
 DB_PATH = os.getenv("DB_PATH", "database.db")
 
 # ---------------- КОНСТАНТЫ ----------------
-SPIN_COOLDOWN = 3600       # крутка раз в 1 час
-CASE_COST = 3000           # цена Кейса Учёных (фиксированная, без возврата)
-FARM_CAP_HOURS = 12        # сколько часов максимум копится доход фермы
+SPIN_COOLDOWN = 3600
+CASE_COST = 3000
+FARM_CAP_HOURS = 12
 FARM_CAP = FARM_CAP_HOURS * 3600
 
 # ---------------- ВЕБ-СЕРВЕР ДЛЯ RENDER ----------------
-web = Flask(__name__)
+app = Flask(__name__)
 
 
-@web.route("/")
+@app.route("/")
 def home():
     return "Бот работает 24/7!"
-
-
-def keep_alive():
-    port = int(os.environ.get("PORT", 10000))
-    t = Thread(target=lambda: web.run(host="0.0.0.0", port=port, debug=False, use_reloader=False), daemon=True)
-    t.start()
-    
 
 
 # ---------------- БАЗА ДАННЫХ ----------------
@@ -81,7 +74,6 @@ def get_balance(uid):
 
 
 def add_coins(uid, amount):
-    """Атомарно начисляет монеты (баланс не уходит ниже 0)."""
     with db() as c:
         c.execute(
             "INSERT INTO balances(user_id, coins) VALUES(?, MAX(0, ?)) "
@@ -91,7 +83,6 @@ def add_coins(uid, amount):
 
 
 def spend_coins(uid, cost):
-    """Атомарно списывает монеты. False, если не хватает."""
     with db() as c:
         cur = c.execute(
             "UPDATE balances SET coins = coins - ? WHERE user_id = ? AND coins >= ?",
@@ -122,7 +113,6 @@ def get_last_spin(uid):
 
 
 def claim_spin(uid):
-    """Атомарно занимает крутку. Возвращает 0, если крутить можно, иначе секунды ожидания."""
     now = time.time()
     with db() as c:
         c.execute("INSERT OR IGNORE INTO cooldowns(user_id, last_time) VALUES(?, 0)", (uid,))
@@ -560,4 +550,19 @@ async def cmd_promo_btn(message: Message, command: CommandObject = None):
     uid = message.from_user.id
     arg = command.args if command else None
     if not arg:
-        parts
+        parts = message.text.split(maxsplit=1)
+        if len(parts) > 1:
+            arg = parts[1]
+    if not arg:
+        awaiting_promo.add(uid)
+        await message.answer("🎁 Введи промокод следующим сообщением:", reply_markup=main_menu())
+        return
+    await message.answer(apply_promo(uid, arg))
+
+
+@dp.message(F.text & ~F.text.in_(MENU_TEXTS))
+async def text_interceptor(message: Message):
+    uid = message.from_user.id
+    if uid in awaiting_promo:
+        awaiting_promo.remove(uid)
+        await message.answer
