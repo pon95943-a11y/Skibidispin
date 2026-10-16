@@ -16,7 +16,8 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-BOT_TOKEN = os.getenv(8828163971:AAHNLvX88C12qzhR-aQJaTB52FznXDyi5hM)
+# Вот здесь токен должен быть обернут в кавычки как строка:
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8828163971:AAHNLvX88C12qzhR-aQJaTB52FznXDyi5hM")
 DB_PATH = os.getenv("DB_PATH", "database.db")
 
 # ---------------- КОНСТАНТЫ ----------------
