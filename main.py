@@ -16,7 +16,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8828163971:AAHNLvX88C12qzhR-aQJaTB52FznXDyi5hM")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8866942007:AAEGICzQpE_JHrnzuvMsoy4LZco37h7dvLg")
 DB_PATH = os.getenv("DB_PATH", "database.db")
 
 # ---------------- КОНСТАНТЫ ----------------
