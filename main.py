@@ -131,7 +131,7 @@ def get_farm_time(user_id):
 
 def set_farm_time(user_id, timestamp):
   cursor.execute(
-      "INSERT OR REPLACE inster OR REPLACE INTO farm_times (user_id, last_time) VALUES (?, ?)",
+      "INSERT OR REPLACE INTO farm_times (user_id, last_time) VALUES (?, ?)",
       (user_id, timestamp),
   )
   db_conn.commit()
@@ -576,7 +576,7 @@ async def cmd_inventory(message: types.Message):
 
 
 async def main():
-  print("✅ Бот запущен! КД 1 час, промокод на миллион активен.")
+  print("✅ Бот запущен! Ошибка синтаксиса исправлена.")
   await dp.start_polling(bot)
 
 
@@ -586,4 +586,3 @@ if __name__ == "__main__":
     asyncio.run(main())
   except (KeyboardInterrupt, SystemExit):
     print("🔴 Бот остановлен.")
-  
