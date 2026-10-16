@@ -1,7 +1,14 @@
 import os
 from threading import Thread
 from flask import Flask
+import asyncio
+import random
+import time
+import sqlite3
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
 
+# --- НАСТРОЙКА ВЕБ-СЕРВЕРА ДЛЯ 24/7 ---
 app = Flask("")
 
 
@@ -19,23 +26,148 @@ def keep_alive():
   t = Thread(target=run)
   t.daemon = True
   t.start()
-import asyncio
-import random
-import time
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
 
+
+# --- НАСТРОЙКА БАЗЫ ДАННЫХ SQLite ---
+db_conn = sqlite3.connect("database.db", check_same_thread=False)
+cursor = db_conn.cursor()
+
+# Создаем таблицы для персистентного хранения
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS balances (
+        user_id INTEGER PRIMARY KEY,
+        coins INTEGER
+    )
+""")
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS inventory (
+        user_id INTEGER,
+        item_name TEXT,
+        count INTEGER,
+        PRIMARY KEY (user_id, item_name)
+    )
+""")
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS cooldowns (
+        user_id INTEGER PRIMARY KEY,
+        last_time REAL
+    )
+""")
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS farm_times (
+        user_id INTEGER PRIMARY KEY,
+        last_time REAL
+    )
+""")
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS redeemed_codes (
+        user_id INTEGER,
+        code_name TEXT,
+        PRIMARY KEY (user_id, code_name)
+    )
+""")
+db_conn.commit()
+
+
+# --- ФУНКЦИИ РАБОТЫ С БАЗОЙ ДАННЫХ ---
+def get_balance(user_id):
+  cursor.execute("SELECT coins FROM balances WHERE user_id = ?", (user_id,))
+  row = cursor.fetchone()
+  return row[0] if row else 0
+
+
+def update_balance(user_id, amount):
+  current = get_balance(user_id)
+  new_balance = current + amount
+  cursor.execute(
+      "INSERT OR REPLACE INTO balances (user_id, coins) VALUES (?, ?)",
+      (user_id, new_balance),
+  )
+  db_conn.commit()
+
+
+def get_user_inventory(user_id):
+  cursor.execute(
+      "SELECT item_name, count FROM inventory WHERE user_id = ?", (user_id,)
+  )
+  rows = cursor.fetchall()
+  return {row[0]: row[1] for row in rows}
+
+
+def add_item_to_inventory(user_id, item_name):
+  inv = get_user_inventory(user_id)
+  current_count = inv.get(item_name, 0) + 1
+  cursor.execute(
+      "INSERT OR REPLACE INTO inventory (user_id, item_name, count) VALUES (?,"
+      " ?, ?)",
+      (user_id, item_name, current_count),
+  )
+  db_conn.commit()
+
+
+def get_cooldown(user_id):
+  cursor.execute(
+      "SELECT last_time FROM cooldowns WHERE user_id = ?", (user_id,)
+  )
+  row = cursor.fetchone()
+  return row[0] if row else 0
+
+
+def set_cooldown(user_id, timestamp):
+  cursor.execute(
+      "INSERT OR REPLACE INTO cooldowns (user_id, last_time) VALUES (?, ?)",
+      (user_id, timestamp),
+  )
+  db_conn.commit()
+
+
+def get_farm_time(user_id):
+  cursor.execute(
+      "SELECT last_time FROM farm_times WHERE user_id = ?", (user_id,)
+  )
+  row = cursor.fetchone()
+  return row[0] if row else None
+
+
+def set_farm_time(user_id, timestamp):
+  cursor.execute(
+      "INSERT OR REPLACE inster OR REPLACE INTO farm_times (user_id, last_time) VALUES (?, ?)",
+      (user_id, timestamp),
+  )
+  db_conn.commit()
+
+
+def has_redeemed(user_id, code_name):
+  cursor.execute(
+      "SELECT 1 FROM redeemed_codes WHERE user_id = ? AND code_name = ?",
+      (user_id, code_name),
+  )
+  return cursor.fetchone() is not None
+
+
+def mark_redeemed(user_id, code_name):
+  cursor.execute(
+      "INSERT OR REPLACE INTO redeemed_codes (user_id, code_name) VALUES (?, ?)",
+      (user_id, code_name),
+  )
+  db_conn.commit()
+
+
+# --- ИНИЦИАЛИЗАЦИЯ БОТА ---
 BOT_TOKEN = "8828163971:AAFcyWMENFCzFHJkKO6CQfygpsjReLE3AR0"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# КД = 0 секунд для тестирования
-COOLDOWN_TIME = 0
-user_cooldowns = {}
-user_inventory = {}  # {user_id: { "Название": count }}
-user_balances = {}  # {user_id: coins}
-user_last_farm_time = {}  # {user_id: timestamp}
+# КД на гачу: 1 час (3600 секунд)
+COOLDOWN_TIME = 3600
+
+# --- СПИСОК ПРОМОКОДОВ ---
+PROMO_CODES = {
+    "SLADCIYKRYT": {"coins": 1000000, "item": None},
+    "SKIBIDI": {"coins": 500, "item": None},
+    "UPDATE": {"coins": 1000, "item": "✨ Эксклюзивный — Обычный Камерамен Учёный"},
+}
 
 # Награды в монетах за базовые редкости (х2)
 REWARD_COINS = {
@@ -53,14 +185,12 @@ FARM_RATES_PER_HOUR = {
     "✨ Эксклюзивный — Инженер Камерамен": 5000,
 }
 
-# Награды при выпадении из кейса ученых
 SCIENTIST_REWARDS = {
     "Обычный Камерамен Учёный": 20,
     "Большой Камерамен Учёный": 100,
     "Инженер Камерамен": 500,
 }
 
-# Базовый пул персонажей (/spin)
 GACHA_POOL = {
     "⚪ Обычный": [
         {
@@ -138,7 +268,6 @@ RARITY_WEIGHTS = {
     "🔴 МИФИЧЕСКИЙ": 0.1,
 }
 
-# Пул и шансы Кейса Учёных с добавленными фото
 SCIENTIST_CASE_POOL = [
     {
         "name": "Обычный Камерамен Учёный",
@@ -165,13 +294,58 @@ SCIENTIST_CASE_POOL = [
 async def cmd_start(message: types.Message):
   await message.answer(
       "🛸 **Skibidi Gacha Bot запущен!**\n\n"
-      "- `/spin` — Бесплатная крутка\n"
+      "- `/spin` — Крутка кейса (КД: 1 час)\n"
       "- `/shop` — Магазин кейсов\n"
       "- `/farm` — Ферма монет (нужны Учёные)\n"
       "- `/inventory` — Твоя коллекция\n"
-      "- `/balance` — Проверить монеты",
+      "- `/balance` — Проверить монеты\n"
+      "- `/promo <код>` — Активировать промокод",
       parse_mode="Markdown",
   )
+
+
+@dp.message(Command("promo"))
+async def cmd_promo(message: types.Message):
+  user_id = message.from_user.id
+  user_mention = message.from_user.mention_markdown(
+      message.from_user.first_name
+  )
+  
+  args = message.text.split(maxsplit=1)
+  if len(args) < 2:
+    await message.reply("❌ Введи промокод! Пример: `/promo SLADCIYKRYT`", parse_mode="Markdown")
+    return
+
+  code = args[1].strip().upper()
+
+  if code not in PROMO_CODES:
+    await message.reply("❌ Такого промокода не существует или он просрочен!", parse_mode="Markdown")
+    return
+
+  if has_redeemed(user_id, code):
+    await message.reply(f"❌ {user_mention}, ты уже активировал этот промокод!", parse_mode="Markdown")
+    return
+
+  promo_data = PROMO_CODES[code]
+  coins_reward = promo_data["coins"]
+  item_reward = promo_data["item"]
+
+  update_balance(user_id, coins_reward)
+  if item_reward:
+    add_item_to_inventory(user_id, item_reward)
+
+  mark_redeemed(user_id, code)
+  total_coins = get_balance(user_id)
+
+  text = (
+      f"🎉 **Промокод успешно активирован!** ({user_mention})\n\n"
+      f"💰 Получено монет: **+{coins_reward}**\n"
+  )
+  if item_reward:
+    text += f"🎁 Получен предмет: **{item_reward}**\n"
+  text += f"💳 Твой баланс: **{total_coins}** монет"
+
+  await message.reply(text, parse_mode="Markdown")
 
 
 @dp.message(Command("spin"))
@@ -179,17 +353,20 @@ async def cmd_spin(message: types.Message):
   user_id = message.from_user.id
   current_time = time.time()
 
-  if user_id in user_cooldowns:
-    time_passed = current_time - user_cooldowns[user_id]
+  last_cd = get_cooldown(user_id)
+  if last_cd:
+    time_passed = current_time - last_cd
     if time_passed < COOLDOWN_TIME:
       remaining_sec = int(COOLDOWN_TIME - time_passed)
+      hours = remaining_sec // 3600
+      minutes = (remaining_sec % 3600) // 60
+      seconds = remaining_sec % 60
       await message.reply(
-          f"⏳ Кейс на перезарядке! Жди {remaining_sec // 60} мин."
-          f" {remaining_sec % 60} сек."
+          f"⏳ Кейс на перезарядке! Жди еще {hours} ч. {minutes} мин. {seconds} сек."
       )
       return
 
-  user_cooldowns[user_id] = current_time
+  set_cooldown(user_id, current_time)
   user_mention = message.from_user.mention_markdown(
       message.from_user.first_name
   )
@@ -204,16 +381,10 @@ async def cmd_spin(message: types.Message):
   chance_val = RARITY_WEIGHTS[chosen_rarity]
 
   coins_earned = REWARD_COINS[chosen_rarity]
-  user_balances[user_id] = user_balances.get(user_id, 0) + coins_earned
-  total_coins = user_balances[user_id]
+  update_balance(user_id, coins_earned)
+  total_coins = get_balance(user_id)
 
-  if user_id not in user_inventory:
-    user_inventory[user_id] = {}
-
-  item_key = f"{chosen_rarity} — {char_name}"
-  user_inventory[user_id][item_key] = (
-      user_inventory[user_id].get(item_key, 0) + 1
-  )
+  add_item_to_inventory(user_id, f"{chosen_rarity} — {char_name}")
 
   caption = (
       f"👤 Игрок: {user_mention}\n\n"
@@ -242,7 +413,7 @@ async def cmd_shop(message: types.Message):
   user_mention = message.from_user.mention_markdown(
       message.from_user.first_name
   )
-  balance = user_balances.get(user_id, 0)
+  balance = get_balance(user_id)
 
   text = (
       f"🛒 **Магазин кейсов** ({user_mention})\n"
@@ -262,7 +433,7 @@ async def cmd_shop(message: types.Message):
 async def cmd_buy_scientist(message: types.Message):
   user_id = message.from_user.id
   cost = 3000
-  balance = user_balances.get(user_id, 0)
+  balance = get_balance(user_id)
 
   if balance < cost:
     await message.reply(
@@ -285,16 +456,10 @@ async def cmd_buy_scientist(message: types.Message):
   char_photo = chosen_unit.get("photo")
 
   coins_earned = SCIENTIST_REWARDS.get(char_name, 0)
-  user_balances[user_id] = balance - cost + coins_earned
-  total_coins = user_balances[user_id]
+  update_balance(user_id, -cost + coins_earned)
+  total_coins = get_balance(user_id)
 
-  if user_id not in user_inventory:
-    user_inventory[user_id] = {}
-
-  item_key = f"{rarity_label} — {char_name}"
-  user_inventory[user_id][item_key] = (
-      user_inventory[user_id].get(item_key, 0) + 1
-  )
+  add_item_to_inventory(user_id, f"{rarity_label} — {char_name}")
 
   caption = (
       f"🧪 **Открытие Кейса Учёных...** ({user_mention})\n\n"
@@ -325,7 +490,7 @@ async def cmd_farm(message: types.Message):
   user_mention = message.from_user.mention_markdown(
       message.from_user.first_name
   )
-  items = user_inventory.get(user_id, {})
+  items = get_user_inventory(user_id)
 
   hourly_rate = 0
   scientist_count = 0
@@ -346,17 +511,19 @@ async def cmd_farm(message: types.Message):
     return
 
   current_time = time.time()
-  last_time = user_last_farm_time.get(user_id, current_time)
+  last_time = get_farm_time(user_id)
+  if last_time is None:
+    last_time = current_time
 
   elapsed_seconds = current_time - last_time
   earned_coins = int((hourly_rate / 3600) * elapsed_seconds)
 
-  user_last_farm_time[user_id] = current_time
+  set_farm_time(user_id, current_time)
 
   if earned_coins > 0:
-    user_balances[user_id] = user_balances.get(user_id, 0) + earned_coins
+    update_balance(user_id, earned_coins)
 
-  total_coins = user_balances.get(user_id, 0)
+  total_coins = get_balance(user_id)
 
   await message.reply(
       f"🚜 **Лабораторная Ферма** ({user_mention})\n\n"
@@ -374,7 +541,7 @@ async def cmd_balance(message: types.Message):
   user_mention = message.from_user.mention_markdown(
       message.from_user.first_name
   )
-  balance = user_balances.get(user_id, 0)
+  balance = get_balance(user_id)
   await message.reply(
       f"🪙 {user_mention}, твой баланс: **{balance}** монет.",
       parse_mode="Markdown",
@@ -387,7 +554,7 @@ async def cmd_inventory(message: types.Message):
   user_mention = message.from_user.mention_markdown(
       message.from_user.first_name
   )
-  items = user_inventory.get(user_id, {})
+  items = get_user_inventory(user_id)
 
   if not items:
     await message.reply(
@@ -409,9 +576,7 @@ async def cmd_inventory(message: types.Message):
 
 
 async def main():
-  print(
-      "✅ Бот запущен! Все учёные на месте, скрипт сбора фото удалён."
-  )
+  print("✅ Бот запущен! КД 1 час, промокод на миллион активен.")
   await dp.start_polling(bot)
 
 
@@ -421,3 +586,4 @@ if __name__ == "__main__":
     asyncio.run(main())
   except (KeyboardInterrupt, SystemExit):
     print("🔴 Бот остановлен.")
+  
