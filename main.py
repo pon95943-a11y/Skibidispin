@@ -35,9 +35,10 @@ def home():
 
 
 def keep_alive():
-    port = int(os.environ.get("PORT", 8080))
-    t = Thread(target=lambda: web.run(host="0.0.0.0", port=port), daemon=True)
+    port = int(os.environ.get("PORT", 10000))
+    t = Thread(target=lambda: web.run(host="0.0.0.0", port=port, debug=False, use_reloader=False), daemon=True)
     t.start()
+    
 
 
 # ---------------- БАЗА ДАННЫХ ----------------
